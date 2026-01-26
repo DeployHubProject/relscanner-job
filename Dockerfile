@@ -19,4 +19,4 @@ ENV ARANGO_PORT=8529
 
 EXPOSE 8080
 
-ENTRYPOINT [ "/app/main" ]
+ENTRYPOINT [ "/app/main", "process-workflow" ]

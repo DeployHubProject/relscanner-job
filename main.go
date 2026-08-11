@@ -1250,3 +1250,7 @@ func getCVEsForReleases(ctx context.Context, releases []ReleaseInfo) (map[string
 func main() {
 	LoadFromOSVDev()
 }
+
+func init() {
+	http.DefaultClient.Timeout = 120 * time.Second
+}

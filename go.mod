@@ -1,6 +1,6 @@
 module github.com/ortelius/osv
 
-go 1.26.4
+go 1.27.1
 
 require (
 	github.com/arangodb/go-driver/v2 v2.4.1

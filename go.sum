@@ -49,6 +49,10 @@ github.com/ortelius/ortelius/v12 v12.0.539 h1:SQ7RPYjh1d9O4ggJt9GfPgdpZCHdRwMPpi
 github.com/ortelius/ortelius/v12 v12.0.539/go.mod h1:2YpmPqtXjF8U0ax0XesqaAP3wfQMkS40Nb+Z9u+7t4M=
 github.com/ortelius/ortelius/v12 v12.0.541 h1:AwDuFstVv0BTDm8uImvzTvPLVGJ5dBcVUTe0FKQoYMM=
 github.com/ortelius/ortelius/v12 v12.0.541/go.mod h1:/CYUtZixd96Hz1n0NEYc/lV8UJegJN+zecg45x63D3Y=
+=======
+github.com/ortelius/ortelius/v12 v12.0.535 h1:GvXRhTLs6D1Ax1hXkvTQZKYADn6FzRjVG2W7YcyVL+M=
+github.com/ortelius/ortelius/v12 v12.0.535/go.mod h1:2YpmPqtXjF8U0ax0XesqaAP3wfQMkS40Nb+Z9u+7t4M=
+>>>>>>> 39feaa3 (fix deps)
 github.com/package-url/packageurl-go v0.1.7 h1:iFWg6tzAjLA6F/qX3M5nZaiMHJgc+p2zxVyr/fY+sZY=
 github.com/package-url/packageurl-go v0.1.7/go.mod h1:nKAWB8E6uk1MHqiS/lQb9pYBGH2+mdJ2PJc2s50dQY0=
 github.com/pandatix/go-cvss v0.6.4 h1:9w2RCO/Q4UTiJyEgpCHRiVc6CfrsFEnkoX+OtATqKio=

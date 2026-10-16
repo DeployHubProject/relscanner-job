@@ -616,7 +616,7 @@ func processUserInstallation(ctx context.Context, dbConn database.DBConnection, 
 				if !scanned[strings.ToLower(owner+"/"+repoName)] {
 					continue
 				}
-				repoMapping := user.GitHubRepoMappings[fmt.Sprintf("%s/%s", owner, repoName)]
+				repoMapping := lookupRepoMapping(user.GitHubRepoMappings, owner, repoName)
 
 				if err := processSingleRepo(ctx, dbConn, client, token, owner, repoName, !repo.GetPrivate(), state.ProcessedRepos, state.TouchedRepos, repoMapping); err != nil {
 					log.Printf("      ⚠️  workflow scan skipped for %s/%s: %v", owner, repoName, err)
@@ -632,6 +632,23 @@ func processUserInstallation(ctx context.Context, dbConn database.DBConnection, 
 		opt.Page = resp.NextPage
 	}
 	return nil
+}
+
+// lookupRepoMapping finds a repo's saved mapping by "owner/repo". The exact
+// key is tried first; otherwise the match is case-insensitive, because the scan
+// allow-list is compared case-insensitively and GitHub names are
+// case-insensitive, so a mapping saved as "Owner/Repo" must still apply.
+func lookupRepoMapping(mappings map[string]model.RepoMapping, owner, repoName string) model.RepoMapping {
+	key := fmt.Sprintf("%s/%s", owner, repoName)
+	if m, ok := mappings[key]; ok {
+		return m
+	}
+	for k, m := range mappings {
+		if strings.EqualFold(k, key) {
+			return m
+		}
+	}
+	return model.RepoMapping{}
 }
 
 // skipRepos is a scanner-wide denylist of "owner/repo" names (case-insensitive)
@@ -884,7 +901,7 @@ func processWorkflowScanTarget(
 	if err := postRelease(serverURL, req); err != nil {
 		return err
 	}
-	syncGitopsEndpoint(ctx, dbConn, release.Name, release.Version, repoMapping.GitopsEndpoint)
+	syncGitopsEndpoint(ctx, dbConn, owner, release.Name, release.Version, repoMapping.GitopsEndpoint)
 
 	processedRepos[repoKey] = runID
 	touchedRepos[repoKey] = true
@@ -1122,7 +1139,11 @@ func processGitHubSourceReleases(ctx context.Context, dbConn database.DBConnecti
 	// re-affirmed, not re-inserted — see ProcessReleaseIngestion's
 	// composite-key dedup and CreateOrUpdateLifecycleRecord's existing-record
 	// check.
-	const newRepoMaxReleases = 5
+	// A repo with no watermark is either brand new or had its watermark cleared
+	// by the backend when the user imported it or saved its mapping on the
+	// Welcome page (resetReleaseWatermarks); both scan the 10 most recent
+	// releases and ignore any older watermark. Every other run respects it.
+	const newRepoMaxReleases = 10
 	const backfillMaxReleases = 10
 
 	if state.ProcessedReleases == nil {
@@ -1299,6 +1320,7 @@ func processGitHubSourceRelease(ctx context.Context, dbConn database.DBConnectio
 		// posted successfully.
 		log.Printf("      ⏭️  Source release %s/%s %s already exists, skipping SBOM generation", owner, repoName, version)
 		resolveCommitViaAPI()
+		syncGitopsEndpoint(ctx, dbConn, owner, releaseName, version, repoMapping.GitopsEndpoint)
 	} else {
 		if downloaded, err := downloadGitHubReleaseSBOMAsset(ctx, client, owner, repoName, ghRelease.GetID()); err == nil && len(downloaded) > 0 {
 			if cleaned, cleanErr := cleanupCycloneDXMainComponent(downloaded, owner, repoName, version); cleanErr == nil {
@@ -1412,7 +1434,7 @@ func processGitHubSourceRelease(ctx context.Context, dbConn database.DBConnectio
 			return err
 		}
 		markReleaseSynced(state, releaseName, version)
-		syncGitopsEndpoint(ctx, dbConn, releaseName, version, repoMapping.GitopsEndpoint)
+		syncGitopsEndpoint(ctx, dbConn, owner, releaseName, version, repoMapping.GitopsEndpoint)
 
 		log.Printf("      🚀 Source release %s/%s %s synced (SHA: %s)", owner, repoName, version, release.ContentSha)
 	}
@@ -1746,17 +1768,131 @@ func runHelmTemplateImages(chartDir string) ([]string, error) {
 	return extractImagesFromManifest([]byte(manifest)), nil
 }
 
-// renderHelmChartManifest loads a chart from disk and renders it exactly
+// maxHelmDefaultRetries bounds how many missing values are defaulted for one chart.
+const maxHelmDefaultRetries = 25
+
+// helmNilValueRe matches the template error Helm raises when a chart reads a
+// value under a map that was never defined, e.g.
+//
+//	executing "DeployHubProject/charts/relscanner-job/templates/cronjob.yaml"
+//	at <.Values.global.github.appName>: nil pointer evaluating interface {}.appName
+var helmNilValueRe = regexp.MustCompile(`executing "([^"]+)" at <\.Values\.([A-Za-z0-9_.]+)>:\s+nil pointer evaluating interface \{\}\.([A-Za-z0-9_]+)`)
+
+// helmSubchartRe pulls the subchart names out of a template path such as
+// "root/charts/sub/charts/subsub/templates/x.yaml".
+var helmSubchartRe = regexp.MustCompile(`/charts/([^/]+)`)
+
+// renderHelmChartManifest renders a chart like `helm template`, but defaults
+// values the chart reads without defining instead of failing.
+//
+// Charts scanned here are rendered with no values file of our own, so a
+// template that reads e.g. .Values.global.github.appName (where nothing defines
+// global.github) fails with "nil pointer evaluating interface {}.appName" and
+// every image in the chart is lost. When that happens the missing path is
+// defaulted to an empty string and the chart is rendered again, up to
+// maxHelmDefaultRetries times. Values the chart defines are never overridden,
+// and any other kind of error is returned unchanged.
+func renderHelmChartManifest(chartDir string) (string, error) {
+	defaults := map[string]interface{}{}
+	var lastErr error
+	for attempt := 0; attempt <= maxHelmDefaultRetries; attempt++ {
+		manifest, err := renderHelmChartOnce(chartDir, defaults)
+		if err == nil {
+			return manifest, nil
+		}
+		lastErr = err
+
+		path, ok := missingHelmValuePath(err)
+		if !ok || !setHelmValueDefault(defaults, path) {
+			break
+		}
+		log.Printf("      ℹ️  helm template: defaulting missing value %s for %s", strings.Join(path, "."), filepath.Base(chartDir))
+	}
+	return "", lastErr
+}
+
+// missingHelmValuePath extracts, from a Helm nil-pointer template error, the
+// path of the missing value as seen from the root chart's values: "global"
+// values are shared, every other path is prefixed with the subchart names found
+// in the template path (a subchart reads its own values under its chart name).
+func missingHelmValuePath(err error) ([]string, bool) {
+	m := helmNilValueRe.FindStringSubmatch(err.Error())
+	if m == nil {
+		return nil, false
+	}
+	tmplPath, valuePath, leaf := m[1], m[2], m[3]
+	parts := strings.Split(valuePath, ".")
+	if len(parts) < 2 || parts[len(parts)-1] != leaf {
+		return nil, false
+	}
+	if parts[0] == "global" {
+		return parts, true
+	}
+	var path []string
+	if i := strings.Index(tmplPath, "/templates/"); i >= 0 {
+		for _, sub := range helmSubchartRe.FindAllStringSubmatch(tmplPath[:i], -1) {
+			path = append(path, sub[1])
+		}
+	}
+	return append(path, parts...), true
+}
+
+// setHelmValueDefault sets path to "" in defaults, creating the maps on the way.
+// It reports false when nothing new could be set, so the caller stops retrying.
+func setHelmValueDefault(defaults map[string]interface{}, path []string) bool {
+	cur := defaults
+	for _, key := range path[:len(path)-1] {
+		next, ok := cur[key].(map[string]interface{})
+		if !ok {
+			next = map[string]interface{}{}
+			cur[key] = next
+		}
+		cur = next
+	}
+	leaf := path[len(path)-1]
+	if _, exists := cur[leaf]; exists {
+		return false
+	}
+	cur[leaf] = ""
+	return true
+}
+
+// mergeMissingValues copies src into dst without overriding anything dst
+// already defines; maps present on both sides are merged recursively.
+func mergeMissingValues(dst, src map[string]interface{}) {
+	for k, sv := range src {
+		dv, ok := dst[k]
+		if !ok || dv == nil {
+			dst[k] = sv
+			continue
+		}
+		dm, dIsMap := dv.(map[string]interface{})
+		sm, sIsMap := sv.(map[string]interface{})
+		if dIsMap && sIsMap {
+			mergeMissingValues(dm, sm)
+		}
+	}
+}
+
+// renderHelmChartOnce loads a chart from disk and renders it exactly
 // like `helm template <chartDir>` would -- action.DryRunClient means no
 // Kubernetes cluster is contacted and nothing is installed; Helm just
 // computes default capabilities and coalesces the chart's own values.yaml
 // (no --set/-f overrides, matching plain `helm template` with no extra
 // flags) before executing the chart's templates.
-func renderHelmChartManifest(chartDir string) (string, error) {
+func renderHelmChartOnce(chartDir string, defaults map[string]interface{}) (string, error) {
 	chartRequested, err := loader.Load(chartDir)
 	if err != nil {
 		return "", fmt.Errorf("failed to load chart %s: %w", chartDir, err)
 	}
+
+	// Fill in defaults for values the chart's own values.yaml leaves undefined
+	// (see renderHelmChartManifest); values the chart does define are kept.
+	vals := chartRequested.Values
+	if vals == nil {
+		vals = map[string]interface{}{}
+	}
+	mergeMissingValues(vals, defaults)
 
 	settings := cli.New()
 	actionConfig := new(action.Configuration)
@@ -1785,7 +1921,7 @@ func renderHelmChartManifest(chartDir string) (string, error) {
 	// Run's return type is release.Releaser (an alias for `any` in v4, to
 	// support multiple release schema versions), so the concrete type has
 	// to be asserted before .Manifest is reachable.
-	rel, err := client.Run(chartRequested, chartRequested.Values)
+	rel, err := client.Run(chartRequested, vals)
 	if err != nil {
 		return "", fmt.Errorf("failed to render chart %s: %w", chartDir, err)
 	}
@@ -1861,6 +1997,7 @@ func postImageSBOMRelease(ctx context.Context, dbConn database.DBConnection, sta
 		log.Printf("      ⚠️  failed to check existing release for %s %s: %v", compName, dockerTag, err)
 	} else if exists {
 		log.Printf("      ⏭️  Chart image release %s already exists, skipping", imageRef)
+		syncGitopsEndpoint(ctx, dbConn, sourceOwner, compName, dockerTag, repoMapping.GitopsEndpoint)
 		return nil
 	}
 
@@ -1907,27 +2044,55 @@ func postImageSBOMRelease(ctx context.Context, dbConn database.DBConnection, sta
 		return err
 	}
 	markReleaseSynced(state, compName, dockerTag)
-	syncGitopsEndpoint(ctx, dbConn, compName, dockerTag, repoMapping.GitopsEndpoint)
+	syncGitopsEndpoint(ctx, dbConn, sourceOwner, compName, dockerTag, repoMapping.GitopsEndpoint)
 
 	log.Printf("      🚀 Chart image release %s synced (SHA: %s)", imageRef, release.ContentSha)
 	return nil
 }
 
-// syncGitopsEndpoint links a release to the runtime endpoint/namespace the
-// user mapped this repo to on the welcome page (RepoMapping.GitopsEndpoint,
-// formatted "<endpoint name>/<namespace>") -- the same Endpoint+Sync shape a
-// real cluster sync produces, so gitops repos show up correlated with where
-// they actually run instead of only under the github-actions/ CI endpoint.
-// No-op when gitopsEndpoint or releaseVersion is empty, so callers can pass
-// it unconditionally.
-func syncGitopsEndpoint(ctx context.Context, dbConn database.DBConnection, releaseName, releaseVersion, gitopsEndpoint string) {
-	gitopsEndpoint = strings.TrimSpace(gitopsEndpoint)
-	if gitopsEndpoint == "" || releaseVersion == "" {
+// qualifyGitopsEndpoint turns the endpoint name a user mapped a repo to into
+// the "<org>/<endpoint>" form stored in the endpoint collection, so the
+// endpoint is listed under the repo's org instead of the default "library"
+// org. A bare "dh-prod" becomes "<owner>/dh-prod"; a value that already has an
+// org ("org/dh-prod") is kept as-is.
+func qualifyGitopsEndpoint(owner, endpoint string) string {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" || strings.Contains(endpoint, "/") {
+		return endpoint
+	}
+	return fmt.Sprintf("%s/%s", owner, endpoint)
+}
+
+// gitopsSyncExists reports whether the release is already linked to the endpoint.
+func gitopsSyncExists(ctx context.Context, dbConn database.DBConnection, endpointName, releaseName, releaseVersion string) (bool, error) {
+	query := `FOR s IN sync FILTER s.endpoint_name == @endpoint && s.release_name == @release && s.release_version == @version LIMIT 1 RETURN 1`
+	cursor, err := dbConn.Database.Query(ctx, query, &arangodb.QueryOptions{
+		BindVars: map[string]interface{}{"endpoint": endpointName, "release": releaseName, "version": releaseVersion},
+	})
+	if err != nil {
+		return false, err
+	}
+	defer cursor.Close()
+	return cursor.HasMore(), nil
+}
+
+// syncGitopsEndpoint links a release to the runtime endpoint the user mapped
+// this repo to on the welcome page (RepoMapping.GitopsEndpoint: a bare endpoint
+// name, or "<org>/<endpoint>"). The endpoint is qualified with the repo owner
+// as its org -- the same Endpoint+Sync shape a real cluster sync produces -- so
+// gitops repos show up correlated with where they actually run instead of only
+// under the github-actions/ CI endpoint.
+// Idempotent: safe to call on every scan cycle, it only creates the sync record
+// when the release is not linked to the endpoint yet. No-op when the endpoint
+// or release version is empty, so callers can pass it unconditionally.
+func syncGitopsEndpoint(ctx context.Context, dbConn database.DBConnection, owner, releaseName, releaseVersion, gitopsEndpoint string) {
+	endpointName := qualifyGitopsEndpoint(owner, gitopsEndpoint)
+	if endpointName == "" || releaseVersion == "" {
 		return
 	}
 
 	endpoint := model.NewEndpoint()
-	endpoint.Name = gitopsEndpoint
+	endpoint.Name = endpointName
 	endpoint.EndpointType = model.EndpointTypeCluster
 	endpoint.Environment = "production"
 	endpoint.ParseAndSetNameComponents()
@@ -1935,12 +2100,21 @@ func syncGitopsEndpoint(ctx context.Context, dbConn database.DBConnection, relea
 	// real cluster sync (Synced Endpoints) or a previous scan cycle.
 	dbConn.Collections["endpoint"].CreateDocument(ctx, endpoint)
 
+	exists, err := gitopsSyncExists(ctx, dbConn, endpointName, releaseName, releaseVersion)
+	if err != nil {
+		log.Printf("      ⚠️  failed to check gitops endpoint sync %s for %s@%s: %v", endpointName, releaseName, releaseVersion, err)
+		return
+	}
+	if exists {
+		return
+	}
+
 	sync := model.NewSync()
-	sync.EndpointName = gitopsEndpoint
+	sync.EndpointName = endpointName
 	sync.ReleaseName = releaseName
 	sync.ReleaseVersion = releaseVersion
 	if _, err := dbConn.Collections["sync"].CreateDocument(ctx, sync); err != nil {
-		log.Printf("      ⚠️  failed to sync gitops endpoint %s for %s@%s: %v", gitopsEndpoint, releaseName, releaseVersion, err)
+		log.Printf("      ⚠️  failed to sync gitops endpoint %s for %s@%s: %v", endpointName, releaseName, releaseVersion, err)
 	}
 }
 

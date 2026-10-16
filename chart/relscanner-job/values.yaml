@@ -11,6 +11,17 @@ env:
   githubAppId: ""
   githubPrivateKey: ""
 
+# Defaults for the values shared from the parent chart's .Values.global so the
+# chart also renders (helm template / dependency scanners) when the parent does
+# not define them. A parent chart's own global values take precedence.
+global:
+  apiBaseUrl: "https://app.deployhub.com"
+  baseUrl: ""
+  github:
+    appName: ""
+    appId: ""
+    clientId: ""
+
 schedule: "*/15 * * * *"
 concurrencyPolicy: Forbid
 restartPolicy: OnFailure

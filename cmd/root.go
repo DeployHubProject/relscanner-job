@@ -1765,7 +1765,15 @@ func runHelmTemplateImages(chartDir string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return extractImagesFromManifest([]byte(manifest)), nil
+	var images []string
+	for _, img := range extractImagesFromManifest([]byte(manifest)) {
+		if strings.Contains(img, helmPlaceholderValue) {
+			log.Printf("      ⏭️  skipping image %s: built from a defaulted helm value", img)
+			continue
+		}
+		images = append(images, img)
+	}
+	return images, nil
 }
 
 // maxHelmDefaultRetries bounds how many missing values are defaulted for one chart.
@@ -1778,6 +1786,20 @@ const maxHelmDefaultRetries = 25
 //	at <.Values.global.github.appName>: nil pointer evaluating interface {}.appName
 var helmNilValueRe = regexp.MustCompile(`executing "([^"]+)" at <\.Values\.([A-Za-z0-9_.]+)>:\s+nil pointer evaluating interface \{\}\.([A-Za-z0-9_]+)`)
 
+// helmRequiredValueRe matches the error a chart raises on purpose (the Helm
+// `required` / `fail` functions) when a value it needs is not set, e.g.
+//
+//	execution error at (DeployHubProject/charts/ortelius/templates/secret.yaml:3:17):
+//	ERROR: .Values.rbac_repo is required for security and must be explicitly set.
+var helmRequiredValueRe = regexp.MustCompile(`execution error at \(([^:)]+):\d+:\d+\):[^\n]*?\.Values\.([A-Za-z0-9_.]+)`)
+
+// helmPlaceholderValue is what every missing value is set to. The render only
+// exists to discover the chart's images, so the value itself does not matter,
+// but it must be non-empty (`required` rejects "") and recognisable: an image
+// reference built from a defaulted value (e.g. "XXX:XXX") is dropped by
+// runHelmTemplateImages instead of being scanned as a real image.
+const helmPlaceholderValue = "XXX"
+
 // helmSubchartRe pulls the subchart names out of a template path such as
 // "root/charts/sub/charts/subsub/templates/x.yaml".
 var helmSubchartRe = regexp.MustCompile(`/charts/([^/]+)`)
@@ -1789,8 +1811,9 @@ var helmSubchartRe = regexp.MustCompile(`/charts/([^/]+)`)
 // template that reads e.g. .Values.global.github.appName (where nothing defines
 // global.github) fails with "nil pointer evaluating interface {}.appName" and
 // every image in the chart is lost. When that happens the missing path is
-// defaulted to an empty string and the chart is rendered again, up to
-// maxHelmDefaultRetries times. Values the chart defines are never overridden,
+// set to helmPlaceholderValue and the chart is rendered again, up to
+// maxHelmDefaultRetries times. Both nil-pointer errors and
+// "<.Values.x> is required" errors raised by `required`/`fail` are handled. Values the chart defines are never overridden,
 // and any other kind of error is returned unchanged.
 func renderHelmChartManifest(chartDir string) (string, error) {
 	defaults := map[string]interface{}{}
@@ -1802,31 +1825,49 @@ func renderHelmChartManifest(chartDir string) (string, error) {
 		}
 		lastErr = err
 
-		path, ok := missingHelmValuePath(err)
+		path, ok := missingHelmValue(err)
 		if !ok || !setHelmValueDefault(defaults, path) {
 			break
 		}
-		log.Printf("      ℹ️  helm template: defaulting missing value %s for %s", strings.Join(path, "."), filepath.Base(chartDir))
+		log.Printf("      ℹ️  helm template: defaulting missing value %s=%q for %s", strings.Join(path, "."), helmPlaceholderValue, filepath.Base(chartDir))
 	}
 	return "", lastErr
 }
 
-// missingHelmValuePath extracts, from a Helm nil-pointer template error, the
-// path of the missing value as seen from the root chart's values: "global"
-// values are shared, every other path is prefixed with the subchart names found
-// in the template path (a subchart reads its own values under its chart name).
-func missingHelmValuePath(err error) ([]string, bool) {
-	m := helmNilValueRe.FindStringSubmatch(err.Error())
-	if m == nil {
-		return nil, false
+// missingHelmValue extracts, from a Helm template error, the path of the value
+// the chart needs, as seen from the root chart's values. Two kinds of error are
+// recognised:
+//   - nil pointer evaluating interface {}.x (the value's parent map was never
+//     defined)
+//   - an `execution error ... .Values.x ...` raised by `required`/`fail`
+//
+// "global" values are shared; every other path is prefixed with the subchart
+// names found in the template path (a subchart reads its own values under its
+// chart name).
+func missingHelmValue(err error) ([]string, bool) {
+	msg := err.Error()
+	if m := helmNilValueRe.FindStringSubmatch(msg); m != nil {
+		parts := strings.Split(m[2], ".")
+		if len(parts) < 2 || parts[len(parts)-1] != m[3] {
+			return nil, false
+		}
+		return helmValuePath(m[1], parts), true
 	}
-	tmplPath, valuePath, leaf := m[1], m[2], m[3]
-	parts := strings.Split(valuePath, ".")
-	if len(parts) < 2 || parts[len(parts)-1] != leaf {
-		return nil, false
+	if m := helmRequiredValueRe.FindStringSubmatch(msg); m != nil {
+		valuePath := strings.Trim(m[2], ".")
+		if valuePath == "" {
+			return nil, false
+		}
+		return helmValuePath(m[1], strings.Split(valuePath, ".")), true
 	}
+	return nil, false
+}
+
+// helmValuePath turns a value path read inside a template into a path from the
+// root chart's values, prefixing the subchart names in the template path.
+func helmValuePath(tmplPath string, parts []string) []string {
 	if parts[0] == "global" {
-		return parts, true
+		return parts
 	}
 	var path []string
 	if i := strings.Index(tmplPath, "/templates/"); i >= 0 {
@@ -1834,11 +1875,12 @@ func missingHelmValuePath(err error) ([]string, bool) {
 			path = append(path, sub[1])
 		}
 	}
-	return append(path, parts...), true
+	return append(path, parts...)
 }
 
-// setHelmValueDefault sets path to "" in defaults, creating the maps on the way.
-// It reports false when nothing new could be set, so the caller stops retrying.
+// setHelmValueDefault sets path to helmPlaceholderValue in defaults, creating
+// the maps on the way. It reports false when the value was already set, so the
+// caller stops retrying a default that did not help.
 func setHelmValueDefault(defaults map[string]interface{}, path []string) bool {
 	cur := defaults
 	for _, key := range path[:len(path)-1] {
@@ -1853,7 +1895,7 @@ func setHelmValueDefault(defaults map[string]interface{}, path []string) bool {
 	if _, exists := cur[leaf]; exists {
 		return false
 	}
-	cur[leaf] = ""
+	cur[leaf] = helmPlaceholderValue
 	return true
 }
 

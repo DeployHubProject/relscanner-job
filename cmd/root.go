@@ -44,6 +44,7 @@ import (
 
 	// Helm SDK, for in-process chart rendering (helm template equivalent)
 	"helm.sh/helm/v4/pkg/action"
+	chartv2 "helm.sh/helm/v4/pkg/chart/v2"
 	"helm.sh/helm/v4/pkg/chart/v2/loader"
 	"helm.sh/helm/v4/pkg/cli"
 	helmrelease "helm.sh/helm/v4/pkg/release/v1"
@@ -1834,17 +1835,108 @@ func renderHelmChartManifest(chartDir string) (string, error) {
 	return "", lastErr
 }
 
+// helmMissingValueError is a render failure whose missing value was recovered
+// from the template source (see helmValuePathFromTemplate); path is the value's
+// location from the root chart's values.
+type helmMissingValueError struct {
+	path []string
+	err  error
+}
+
+func (e *helmMissingValueError) Error() string { return e.err.Error() }
+func (e *helmMissingValueError) Unwrap() error { return e.err }
+
+// helmTemplateLocRe captures the "<template>:<line>:<col>" position Helm
+// prints before `executing "<template>"`, e.g.
+//
+//	DeployHubProject/charts/ortelius/templates/secret.yaml:22:52
+//	  executing "DeployHubProject/charts/ortelius/templates/secret.yaml" at <b64enc>:
+//	    invalid value; expected string
+var helmTemplateLocRe = regexp.MustCompile(`:(\d+):(\d+)\s+executing "([^"]+)"`)
+
+// helmBadValueTypeRe matches the errors a template function raises when it is
+// handed a missing (nil) value instead of the type it needs.
+var helmBadValueTypeRe = regexp.MustCompile(`invalid value; expected \w+|wrong type for value; expected \w+; got`)
+
+// helmValueRefRe matches a ".Values.a.b.c" reference in template source.
+var helmValueRefRe = regexp.MustCompile(`\.Values((?:\.[A-Za-z0-9_]+)+)`)
+
+// helmValuePathFromTemplate finds the value behind an error like
+// `b64enc: invalid value; expected string`, which does not say which value was
+// missing. It reads the failing template line from the loaded chart (subcharts
+// included, even when packaged as .tgz) and takes the last ".Values.x"
+// reference before the error column.
+func helmValuePathFromTemplate(root *chartv2.Chart, err error) ([]string, bool) {
+	msg := err.Error()
+	if !helmBadValueTypeRe.MatchString(msg) {
+		return nil, false
+	}
+	m := helmTemplateLocRe.FindStringSubmatch(msg)
+	if m == nil {
+		return nil, false
+	}
+	lineNo, _ := strconv.Atoi(m[1])
+	col, _ := strconv.Atoi(m[2])
+	tmplName := m[3]
+
+	src, ok := findHelmTemplate(root, root.Name(), tmplName)
+	if !ok {
+		return nil, false
+	}
+	lines := strings.Split(string(src), "\n")
+	if lineNo < 1 || lineNo > len(lines) {
+		return nil, false
+	}
+	line := lines[lineNo-1]
+
+	var ref string
+	for _, loc := range helmValueRefRe.FindAllStringSubmatchIndex(line, -1) {
+		if loc[0] <= col {
+			ref = line[loc[2]:loc[3]]
+		}
+	}
+	parts := strings.Split(strings.TrimPrefix(ref, "."), ".")
+	if ref == "" || len(parts) == 0 {
+		return nil, false
+	}
+	return helmValuePath(tmplName, parts), true
+}
+
+// findHelmTemplate returns the source of the template Helm calls tmplName
+// ("<root>/charts/<sub>/templates/<file>"), searching the chart and its
+// dependencies.
+func findHelmTemplate(c *chartv2.Chart, prefix, tmplName string) ([]byte, bool) {
+	for _, f := range c.Templates {
+		if prefix+"/"+f.Name == tmplName {
+			return f.Data, true
+		}
+	}
+	for _, dep := range c.Dependencies() {
+		if data, ok := findHelmTemplate(dep, prefix+"/charts/"+dep.Name(), tmplName); ok {
+			return data, true
+		}
+	}
+	return nil, false
+}
+
 // missingHelmValue extracts, from a Helm template error, the path of the value
 // the chart needs, as seen from the root chart's values. Two kinds of error are
 // recognised:
 //   - nil pointer evaluating interface {}.x (the value's parent map was never
 //     defined)
 //   - an `execution error ... .Values.x ...` raised by `required`/`fail`
+//   - a function given a missing value (e.g. b64enc: "invalid value; expected
+//     string"), which does not name the value; renderHelmChartOnce recovers it
+//     from the template source and returns a helmMissingValueError
 //
 // "global" values are shared; every other path is prefixed with the subchart
 // names found in the template path (a subchart reads its own values under its
 // chart name).
 func missingHelmValue(err error) ([]string, bool) {
+	var mv *helmMissingValueError
+	if errors.As(err, &mv) {
+		return mv.path, true
+	}
 	msg := err.Error()
 	if m := helmNilValueRe.FindStringSubmatch(msg); m != nil {
 		parts := strings.Split(m[2], ".")
@@ -1965,7 +2057,13 @@ func renderHelmChartOnce(chartDir string, defaults map[string]interface{}) (stri
 	// to be asserted before .Manifest is reachable.
 	rel, err := client.Run(chartRequested, vals)
 	if err != nil {
-		return "", fmt.Errorf("failed to render chart %s: %w", chartDir, err)
+		renderErr := fmt.Errorf("failed to render chart %s: %w", chartDir, err)
+		// Some failures do not name the value (e.g. "b64enc: invalid value;
+		// expected string"); recover it from the template source.
+		if path, ok := helmValuePathFromTemplate(chartRequested, err); ok {
+			return "", &helmMissingValueError{path: path, err: renderErr}
+		}
+		return "", renderErr
 	}
 	rendered, ok := rel.(*helmrelease.Release)
 	if !ok || rendered == nil {

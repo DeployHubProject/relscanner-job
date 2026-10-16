@@ -1,31 +1,52 @@
-name: Sync Upstream
+name: Sync Fork
 
 on:
   schedule:
-    # Runs every 30 minutes
-    - cron: '*/30 * * * *'
-  # Allows you to manually trigger the workflow from the Actions tab
-  workflow_dispatch: 
+    - cron: '*/30 * * * *' # every 30 minutes
+  workflow_dispatch: # on button click
+
 
 jobs:
-  sync:
+  sync_latest_from_upstream:
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout target branch
-        uses: actions/checkout@v4
-        with:
-          # Set this to the branch you want to sync (e.g., main or master)
-          ref: main 
-          persist-credentials: false
+    name: Sync latest commits from upstream repo
 
-      - name: Sync upstream changes
-        uses: repo-sync/github-sync@v2
-        with:
-          # Format: owner/repository
-          upstream_repository: "ortelius/relscanner-job"
-          # The upstream branch you want to sync from
-          target_repository_branch: "main"
-          # The local branch you want to sync to
-          target_branch: "main"
-          # GitHub automatically provides this token
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        ref:  main
+        fetch-depth: 0
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '24'
+
+    - name: Sync upstream changes
+      id: sync
+      uses: aormsby/Fork-Sync-With-Upstream-action@v3.4.1
+      with:
+        target_sync_branch: main
+        target_repo_token: ${{ secrets.GITHUB_TOKEN }}
+        upstream_sync_branch: main
+        upstream_sync_repo: ortelius/relscanner-job
+        upstream_repo_access_token: ${{ secrets.GITHUB_TOKEN }}
+        git_config_pull_rebase: true
+        target_branch_push_args: '--force-with-lease'
+
+        # Set test_mode true during manual dispatch to run tests instead of the true action!!
+        test_mode: ${{ inputs.sync_test_mode }}
+      
+    # Step 3: Display a sample message based on the sync output var 'has_new_commits'
+    - name: New commits found
+      if: steps.sync.outputs.has_new_commits == 'true'
+      run: echo "New commits were found to sync."
+    
+    - name: No new commits
+      if: steps.sync.outputs.has_new_commits == 'false'
+      run: echo "There were no new commits."
+      
+    - name: Show value of 'has_new_commits'
+      run: echo ${{ steps.sync.outputs.has_new_commits }}
+

@@ -1992,12 +1992,21 @@ func setHelmValueDefault(defaults map[string]interface{}, path []string) bool {
 }
 
 // mergeMissingValues copies src into dst without overriding anything dst
-// already defines; maps present on both sides are merged recursively.
+// already defines; maps present on both sides are merged recursively. The one
+// exception is a value dst defines as an empty string: charts often ship blank
+// placeholders for secrets (e.g. arangodb_pass: "") that their `required` checks
+// then reject, so a non-empty default replaces it.
 func mergeMissingValues(dst, src map[string]interface{}) {
 	for k, sv := range src {
 		dv, ok := dst[k]
 		if !ok || dv == nil {
 			dst[k] = sv
+			continue
+		}
+		if ds, isStr := dv.(string); isStr && ds == "" {
+			if ss, srcIsStr := sv.(string); srcIsStr && ss != "" {
+				dst[k] = ss
+			}
 			continue
 		}
 		dm, dIsMap := dv.(map[string]interface{})

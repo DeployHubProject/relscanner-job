@@ -1,4 +1,4 @@
-// Package cmd implements the worker command for the Kubernetes Job
+\// Package cmd implements the worker command for the Kubernetes Job
 // that processes GitHub Action logs and source releases to create releases and SBOMs.
 package cmd
 
@@ -1783,15 +1783,15 @@ const maxHelmDefaultRetries = 25
 // helmNilValueRe matches the template error Helm raises when a chart reads a
 // value under a map that was never defined, e.g.
 //
-//	executing "DeployHubProject/charts/relscanner-job/templates/cronjob.yaml"
-//	at <.Values.global.github.appName>: nil pointer evaluating interface {}.appName
+//     executing "DeployHubProject/charts/relscanner-job/templates/cronjob.yaml"
+//     at <.Values.global.github.appName>: nil pointer evaluating interface {}.appName
 var helmNilValueRe = regexp.MustCompile(`executing "([^"]+)" at <\.Values\.([A-Za-z0-9_.]+)>:\s+nil pointer evaluating interface \{\}\.([A-Za-z0-9_]+)`)
 
 // helmRequiredValueRe matches the error a chart raises on purpose (the Helm
 // `required` / `fail` functions) when a value it needs is not set, e.g.
 //
-//	execution error at (DeployHubProject/charts/ortelius/templates/secret.yaml:3:17):
-//	ERROR: .Values.rbac_repo is required for security and must be explicitly set.
+//     execution error at (DeployHubProject/charts/ortelius/templates/secret.yaml:3:17):
+//     ERROR: .Values.rbac_repo is required for security and must be explicitly set.
 var helmRequiredValueRe = regexp.MustCompile(`execution error at \(([^:)]+):\d+:\d+\):[^\n]*?\.Values\.([A-Za-z0-9_.]+)`)
 
 // helmPlaceholderValue is what every missing value is set to. The render only
@@ -1849,9 +1849,9 @@ func (e *helmMissingValueError) Unwrap() error { return e.err }
 // helmTemplateLocRe captures the "<template>:<line>:<col>" position Helm
 // prints before `executing "<template>"`, e.g.
 //
-//	DeployHubProject/charts/ortelius/templates/secret.yaml:22:52
-//	  executing "DeployHubProject/charts/ortelius/templates/secret.yaml" at <b64enc>:
-//	    invalid value; expected string
+//     DeployHubProject/charts/ortelius/templates/secret.yaml:22:52
+//       executing "DeployHubProject/charts/ortelius/templates/secret.yaml" at <b64enc>:
+//         invalid value; expected string
 var helmTemplateLocRe = regexp.MustCompile(`:(\d+):(\d+)\s+executing "([^"]+)"`)
 
 // helmBadValueTypeRe matches the errors a template function raises when it is
@@ -1928,7 +1928,6 @@ func findHelmTemplate(c *chartv2.Chart, prefix, tmplName string) ([]byte, bool) 
 //   - a function given a missing value (e.g. b64enc: "invalid value; expected
 //     string"), which does not name the value; renderHelmChartOnce recovers it
 //     from the template source and returns a helmMissingValueError
-//
 // "global" values are shared; every other path is prefixed with the subchart
 // names found in the template path (a subchart reads its own values under its
 // chart name).
@@ -2212,6 +2211,26 @@ func qualifyGitopsEndpoint(owner, endpoint string) string {
 	return fmt.Sprintf("%s/%s", owner, endpoint)
 }
 
+// ensureEndpoint creates the endpoint unless one with the same name already
+// exists. Endpoint documents get an auto-generated _key and `name` has no
+// unique index, so a plain CreateDocument adds a duplicate on every call; the
+// endpoint may also already exist from a real cluster sync.
+func ensureEndpoint(ctx context.Context, dbConn database.DBConnection, endpoint *model.Endpoint) error {
+	cursor, err := dbConn.Database.Query(ctx, `FOR e IN endpoint FILTER e.name == @name LIMIT 1 RETURN 1`, &arangodb.QueryOptions{
+		BindVars: map[string]interface{}{"name": endpoint.Name},
+	})
+	if err != nil {
+		return err
+	}
+	exists := cursor.HasMore()
+	cursor.Close()
+	if exists {
+		return nil
+	}
+	_, err = dbConn.Collections["endpoint"].CreateDocument(ctx, endpoint)
+	return err
+}
+
 // gitopsSyncExists reports whether the release is already linked to the endpoint.
 func gitopsSyncExists(ctx context.Context, dbConn database.DBConnection, endpointName, releaseName, releaseVersion string) (bool, error) {
 	query := `FOR s IN sync FILTER s.endpoint_name == @endpoint && s.release_name == @release && s.release_version == @version LIMIT 1 RETURN 1`
@@ -2245,9 +2264,12 @@ func syncGitopsEndpoint(ctx context.Context, dbConn database.DBConnection, owner
 	endpoint.EndpointType = model.EndpointTypeCluster
 	endpoint.Environment = "production"
 	endpoint.ParseAndSetNameComponents()
-	// Ignore duplicate-key errors -- the endpoint may already exist from a
-	// real cluster sync (Synced Endpoints) or a previous scan cycle.
-	dbConn.Collections["endpoint"].CreateDocument(ctx, endpoint)
+	// Create it only once: the endpoint may already exist from a real cluster
+	// sync (Synced Endpoints) or a previous scan cycle.
+	if err := ensureEndpoint(ctx, dbConn, endpoint); err != nil {
+		log.Printf("      ⚠️  failed to ensure gitops endpoint %s: %v", endpointName, err)
+		return
+	}
 
 	exists, err := gitopsSyncExists(ctx, dbConn, endpointName, releaseName, releaseVersion)
 	if err != nil {
@@ -3423,6 +3445,5 @@ func postRelease(serverURL string, payload interface{}) error {
 			time.Sleep(backoff)
 		}
 	}
-
 	return fmt.Errorf("postRelease failed after %d attempts: %w", maxAttempts, lastErr)
 }

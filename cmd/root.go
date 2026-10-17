@@ -3423,5 +3423,6 @@ func postRelease(serverURL string, payload interface{}) error {
 			time.Sleep(backoff)
 		}
 	}
+
 	return fmt.Errorf("postRelease failed after %d attempts: %w", maxAttempts, lastErr)
 }

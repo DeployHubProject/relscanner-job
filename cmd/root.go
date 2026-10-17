@@ -1,4 +1,4 @@
-\// Package cmd implements the worker command for the Kubernetes Job
+// Package cmd implements the worker command for the Kubernetes Job
 // that processes GitHub Action logs and source releases to create releases and SBOMs.
 package cmd
 
@@ -1783,15 +1783,15 @@ const maxHelmDefaultRetries = 25
 // helmNilValueRe matches the template error Helm raises when a chart reads a
 // value under a map that was never defined, e.g.
 //
-//     executing "DeployHubProject/charts/relscanner-job/templates/cronjob.yaml"
-//     at <.Values.global.github.appName>: nil pointer evaluating interface {}.appName
+//	executing "DeployHubProject/charts/relscanner-job/templates/cronjob.yaml"
+//	at <.Values.global.github.appName>: nil pointer evaluating interface {}.appName
 var helmNilValueRe = regexp.MustCompile(`executing "([^"]+)" at <\.Values\.([A-Za-z0-9_.]+)>:\s+nil pointer evaluating interface \{\}\.([A-Za-z0-9_]+)`)
 
 // helmRequiredValueRe matches the error a chart raises on purpose (the Helm
 // `required` / `fail` functions) when a value it needs is not set, e.g.
 //
-//     execution error at (DeployHubProject/charts/ortelius/templates/secret.yaml:3:17):
-//     ERROR: .Values.rbac_repo is required for security and must be explicitly set.
+//	execution error at (DeployHubProject/charts/ortelius/templates/secret.yaml:3:17):
+//	ERROR: .Values.rbac_repo is required for security and must be explicitly set.
 var helmRequiredValueRe = regexp.MustCompile(`execution error at \(([^:)]+):\d+:\d+\):[^\n]*?\.Values\.([A-Za-z0-9_.]+)`)
 
 // helmPlaceholderValue is what every missing value is set to. The render only
@@ -1849,9 +1849,9 @@ func (e *helmMissingValueError) Unwrap() error { return e.err }
 // helmTemplateLocRe captures the "<template>:<line>:<col>" position Helm
 // prints before `executing "<template>"`, e.g.
 //
-//     DeployHubProject/charts/ortelius/templates/secret.yaml:22:52
-//       executing "DeployHubProject/charts/ortelius/templates/secret.yaml" at <b64enc>:
-//         invalid value; expected string
+//	DeployHubProject/charts/ortelius/templates/secret.yaml:22:52
+//	  executing "DeployHubProject/charts/ortelius/templates/secret.yaml" at <b64enc>:
+//	    invalid value; expected string
 var helmTemplateLocRe = regexp.MustCompile(`:(\d+):(\d+)\s+executing "([^"]+)"`)
 
 // helmBadValueTypeRe matches the errors a template function raises when it is
@@ -1928,6 +1928,7 @@ func findHelmTemplate(c *chartv2.Chart, prefix, tmplName string) ([]byte, bool) 
 //   - a function given a missing value (e.g. b64enc: "invalid value; expected
 //     string"), which does not name the value; renderHelmChartOnce recovers it
 //     from the template source and returns a helmMissingValueError
+//
 // "global" values are shared; every other path is prefixed with the subchart
 // names found in the template path (a subchart reads its own values under its
 // chart name).
@@ -2248,8 +2249,7 @@ func gitopsSyncExists(ctx context.Context, dbConn database.DBConnection, endpoin
 // this repo to on the welcome page (RepoMapping.GitopsEndpoint: a bare endpoint
 // name, or "<org>/<endpoint>"). The endpoint is qualified with the repo owner
 // as its org -- the same Endpoint+Sync shape a real cluster sync produces -- so
-// gitops repos show up correlated with where they actually run instead of only
-// under the github-actions/ CI endpoint.
+// gitops repos show up correlated with where they actually run.
 // Idempotent: safe to call on every scan cycle, it only creates the sync record
 // when the release is not linked to the endpoint yet. No-op when the endpoint
 // or release version is empty, so callers can pass it unconditionally.

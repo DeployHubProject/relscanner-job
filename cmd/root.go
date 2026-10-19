@@ -2212,6 +2212,26 @@ func qualifyGitopsEndpoint(owner, endpoint string) string {
 	return fmt.Sprintf("%s/%s", owner, endpoint)
 }
 
+// ensureEndpoint creates the endpoint unless one with the same name already
+// exists. Endpoint documents get an auto-generated _key and `name` has no
+// unique index, so a plain CreateDocument adds a duplicate on every call; the
+// endpoint may also already exist from a real cluster sync.
+func ensureEndpoint(ctx context.Context, dbConn database.DBConnection, endpoint *model.Endpoint) error {
+	cursor, err := dbConn.Database.Query(ctx, `FOR e IN endpoint FILTER e.name == @name LIMIT 1 RETURN 1`, &arangodb.QueryOptions{
+		BindVars: map[string]interface{}{"name": endpoint.Name},
+	})
+	if err != nil {
+		return err
+	}
+	exists := cursor.HasMore()
+	cursor.Close()
+	if exists {
+		return nil
+	}
+	_, err = dbConn.Collections["endpoint"].CreateDocument(ctx, endpoint)
+	return err
+}
+
 // gitopsSyncExists reports whether the release is already linked to the endpoint.
 func gitopsSyncExists(ctx context.Context, dbConn database.DBConnection, endpointName, releaseName, releaseVersion string) (bool, error) {
 	query := `FOR s IN sync FILTER s.endpoint_name == @endpoint && s.release_name == @release && s.release_version == @version LIMIT 1 RETURN 1`
@@ -2229,8 +2249,7 @@ func gitopsSyncExists(ctx context.Context, dbConn database.DBConnection, endpoin
 // this repo to on the welcome page (RepoMapping.GitopsEndpoint: a bare endpoint
 // name, or "<org>/<endpoint>"). The endpoint is qualified with the repo owner
 // as its org -- the same Endpoint+Sync shape a real cluster sync produces -- so
-// gitops repos show up correlated with where they actually run instead of only
-// under the github-actions/ CI endpoint.
+// gitops repos show up correlated with where they actually run.
 // Idempotent: safe to call on every scan cycle, it only creates the sync record
 // when the release is not linked to the endpoint yet. No-op when the endpoint
 // or release version is empty, so callers can pass it unconditionally.
@@ -2245,9 +2264,12 @@ func syncGitopsEndpoint(ctx context.Context, dbConn database.DBConnection, owner
 	endpoint.EndpointType = model.EndpointTypeCluster
 	endpoint.Environment = "production"
 	endpoint.ParseAndSetNameComponents()
-	// Ignore duplicate-key errors -- the endpoint may already exist from a
-	// real cluster sync (Synced Endpoints) or a previous scan cycle.
-	dbConn.Collections["endpoint"].CreateDocument(ctx, endpoint)
+	// Create it only once: the endpoint may already exist from a real cluster
+	// sync (Synced Endpoints) or a previous scan cycle.
+	if err := ensureEndpoint(ctx, dbConn, endpoint); err != nil {
+		log.Printf("      ⚠️  failed to ensure gitops endpoint %s: %v", endpointName, err)
+		return
+	}
 
 	exists, err := gitopsSyncExists(ctx, dbConn, endpointName, releaseName, releaseVersion)
 	if err != nil {
@@ -3423,6 +3445,5 @@ func postRelease(serverURL string, payload interface{}) error {
 			time.Sleep(backoff)
 		}
 	}
-
 	return fmt.Errorf("postRelease failed after %d attempts: %w", maxAttempts, lastErr)
 }

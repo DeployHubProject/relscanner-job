@@ -2111,7 +2111,7 @@ func extractImagesFromManifest(manifest []byte) []string {
 // repo's mapped namespace. repoMapping.GitopsEndpoint IS applied, though:
 // these image releases are the actual gitops-deployed artifacts, so they're
 // what should be linked to the mapped runtime endpoint.
-ffunc postImageSBOMRelease(ctx context.Context, dbConn database.DBConnection, state *ScannerState, imageRef, sourceOwner, sourceRepoName, sourceGitURL, sourceCommit string, isPublic bool, repoMapping model.RepoMapping) error {
+func postImageSBOMRelease(ctx context.Context, dbConn database.DBConnection, state *ScannerState, imageRef, sourceOwner, sourceRepoName, sourceGitURL, sourceCommit string, isPublic bool, repoMapping model.RepoMapping) error {
 	ref, err := name.ParseReference(imageRef)
 	if err != nil {
 		return fmt.Errorf("invalid image reference %q: %w", imageRef, err)

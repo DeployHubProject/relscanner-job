@@ -2111,7 +2111,7 @@ func extractImagesFromManifest(manifest []byte) []string {
 // repo's mapped namespace. repoMapping.GitopsEndpoint IS applied, though:
 // these image releases are the actual gitops-deployed artifacts, so they're
 // what should be linked to the mapped runtime endpoint.
-func postImageSBOMRelease(ctx context.Context, dbConn database.DBConnection, state *ScannerState, imageRef, sourceOwner, sourceRepoName, sourceGitURL, sourceCommit string, isPublic bool, repoMapping model.RepoMapping) error {
+ffunc postImageSBOMRelease(ctx context.Context, dbConn database.DBConnection, state *ScannerState, imageRef, sourceOwner, sourceRepoName, sourceGitURL, sourceCommit string, isPublic bool, repoMapping model.RepoMapping) error {
 	ref, err := name.ParseReference(imageRef)
 	if err != nil {
 		return fmt.Errorf("invalid image reference %q: %w", imageRef, err)
@@ -2128,7 +2128,11 @@ func postImageSBOMRelease(ctx context.Context, dbConn database.DBConnection, sta
 	// -- falling back to sourceOwner only if the image ref genuinely has no
 	// separable namespace of its own.
 	imgOrg := dockerImageOrg(imageRef)
-	if imgOrg == "" {
+	if imgOrg == "" || strings.EqualFold(imgOrg, sourceOwner) {
+		// Registry namespaces are always lowercase, but the source owner keeps
+		// GitHub's original casing (e.g. "DeployHubProject"). When they match
+		// ignoring case, use the owner's casing so the release name/org lines up
+		// with the gitops endpoint, which is qualified with sourceOwner.
 		imgOrg = sourceOwner
 	}
 	compName := fmt.Sprintf("%s/%s", imgOrg, dockerImageBasename(imageRef))

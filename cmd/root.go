@@ -952,6 +952,10 @@ func releaseVersionExists(ctx context.Context, dbConn database.DBConnection, rel
 	if releaseName == "" || version == "" {
 		return false, nil
 	}
+	// The backend stores release versions with any branch prefix stripped
+	// (e.g. "main-v12.0.20-ged003f" -> "12.0.20-ged003f"), so compare against
+	// the cleaned form or this check never matches image-tag versions.
+	version = util.CleanVersion(version)
 	query := `FOR r IN release FILTER r.name == @name && r.version == @version LIMIT 1 RETURN 1`
 	cursor, err := dbConn.Database.Query(ctx, query, &arangodb.QueryOptions{
 		BindVars: map[string]interface{}{"name": releaseName, "version": version},
@@ -2128,7 +2132,11 @@ func postImageSBOMRelease(ctx context.Context, dbConn database.DBConnection, sta
 	// -- falling back to sourceOwner only if the image ref genuinely has no
 	// separable namespace of its own.
 	imgOrg := dockerImageOrg(imageRef)
-	if imgOrg == "" {
+	if imgOrg == "" || strings.EqualFold(imgOrg, sourceOwner) {
+		// Registry namespaces are always lowercase, but the source owner keeps
+		// GitHub's original casing (e.g. "DeployHubProject"). When they match
+		// ignoring case, use the owner's casing so the release name/org lines up
+		// with the gitops endpoint, which is qualified with sourceOwner.
 		imgOrg = sourceOwner
 	}
 	compName := fmt.Sprintf("%s/%s", imgOrg, dockerImageBasename(imageRef))
@@ -2258,6 +2266,10 @@ func syncGitopsEndpoint(ctx context.Context, dbConn database.DBConnection, owner
 	if endpointName == "" || releaseVersion == "" {
 		return
 	}
+	// Sync records must carry the version exactly as the backend stores the
+	// release (branch prefix stripped), otherwise the endpoint can't join the
+	// sync record to its release.
+	releaseVersion = util.CleanVersion(releaseVersion)
 
 	endpoint := model.NewEndpoint()
 	endpoint.Name = endpointName

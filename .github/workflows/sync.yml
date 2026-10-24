@@ -28,10 +28,10 @@ jobs:
       uses: aormsby/Fork-Sync-With-Upstream-action@v3.4.1
       with:
         target_sync_branch: main
-        target_repo_token: ${{ secrets.GITHUB_TOKEN }}
+        target_repo_token: ${{ secrets.DH_HELM_INDEXER_TOKEN }}
         upstream_sync_branch: main
         upstream_sync_repo: ortelius/relscanner-job
-        upstream_repo_access_token: ${{ secrets.GITHUB_TOKEN }}
+        upstream_repo_access_token: ${{ secrets.DH_HELM_INDEXER_TOKEN }}
         git_config_pull_rebase: true
         target_branch_push_args: '--force-with-lease'
 

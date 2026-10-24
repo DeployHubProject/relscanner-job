@@ -26,7 +26,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          token: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PAT || secrets.DH_HELM_INDEXER_TOKEN }}
           fetch-depth: 0
 
       - name: MegaLinter
@@ -34,7 +34,7 @@ jobs:
         uses: oxsecurity/megalinter/flavors/go@876348a2138b35cc3680e437d65534c1cec3781d
         env:
           VALIDATE_ALL_CODEBASE: true
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DH_HELM_INDEXER_TOKEN: ${{ secrets.DH_HELM_INDEXER_TOKEN }}
 
       - name: Archive production artifacts
         if: ${{ success() || failure() }}
@@ -54,7 +54,7 @@ jobs:
           !contains(github.event.head_commit.message, 'skip fix')
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
         with:
-          token: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PAT || secrets.DH_HELM_INDEXER_TOKEN }}
           commit-message: "[MegaLinter] Apply linters automatic fixes"
           title: "[MegaLinter] Apply linters automatic fixes"
           labels: bot

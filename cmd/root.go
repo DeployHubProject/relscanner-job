@@ -952,6 +952,10 @@ func releaseVersionExists(ctx context.Context, dbConn database.DBConnection, rel
 	if releaseName == "" || version == "" {
 		return false, nil
 	}
+	// The backend stores release versions with any branch prefix stripped
+	// (e.g. "main-v12.0.20-ged003f" -> "12.0.20-ged003f"), so compare against
+	// the cleaned form or this check never matches image-tag versions.
+	version = util.CleanVersion(version)
 	query := `FOR r IN release FILTER r.name == @name && r.version == @version LIMIT 1 RETURN 1`
 	cursor, err := dbConn.Database.Query(ctx, query, &arangodb.QueryOptions{
 		BindVars: map[string]interface{}{"name": releaseName, "version": version},

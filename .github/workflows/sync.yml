@@ -1,10 +1,22 @@
+
 name: Sync Fork
 
 on:
   schedule:
-    - cron: '*/30 * * * *' # every 30 minutes
-  workflow_dispatch: # on button click
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    inputs:
+      sync_test_mode:
+        description: 'Test without pushing changes'
+        type: boolean
+        default: false
 
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-fork-main
+  cancel-in-progress: false
 
 jobs:
   sync_latest_from_upstream:
@@ -12,41 +24,71 @@ jobs:
     name: Sync latest commits from upstream repo
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        ref:  main
-        fetch-depth: 0
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.DH_HELM_INDEXER_TOKEN }}
+          persist-credentials: true
 
-    - name: Set up Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '24'
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
 
-    - name: Sync upstream changes
-      id: sync
-      uses: aormsby/Fork-Sync-With-Upstream-action@v3.4.1
-      with:
-        target_sync_branch: main
-        target_repo_token: ${{ secrets.DH_HELM_INDEXER_TOKEN }}
-        upstream_sync_branch: main
-        upstream_sync_repo: ortelius/relscanner-job
-        upstream_repo_access_token: ${{ secrets.DH_HELM_INDEXER_TOKEN }}
-        git_config_pull_rebase: true
-        target_branch_push_args: '--force-with-lease'
+      - name: Sync upstream changes
+        id: sync
+        env:
+          TEST_MODE: ${{ inputs.sync_test_mode }}
+        run: |
+          set -euo pipefail
 
-        # Set test_mode true during manual dispatch to run tests instead of the true action!!
-        test_mode: ${{ inputs.sync_test_mode }}
-      
-    # Step 3: Display a sample message based on the sync output var 'has_new_commits'
-    - name: New commits found
-      if: steps.sync.outputs.has_new_commits == 'true'
-      run: echo "New commits were found to sync."
-    
-    - name: No new commits
-      if: steps.sync.outputs.has_new_commits == 'false'
-      run: echo "There were no new commits."
-      
-    - name: Show value of 'has_new_commits'
-      run: echo ${{ steps.sync.outputs.has_new_commits }}
+          git remote add upstream \
+            https://github.com/ortelius/osvdev-job.git
 
+          git fetch upstream main
+
+          OLD_SHA=$(git rev-parse HEAD)
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "Already up to date with upstream."
+            echo "has_new_commits=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Rebasing onto upstream/main..."
+          echo "Conflicts will favor upstream."
+
+          # During rebase, ours = upstream.
+          git rebase -X ours upstream/main
+
+          NEW_SHA=$(git rev-parse HEAD)
+
+          if [ "$OLD_SHA" = "$NEW_SHA" ]; then
+            echo "No changes to push."
+            echo "has_new_commits=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "has_new_commits=true" >> "$GITHUB_OUTPUT"
+
+          if [ "$TEST_MODE" = "true" ]; then
+            echo "Test mode: skipping push."
+            exit 0
+          fi
+
+          echo "Pushing synchronized main..."
+          git push --force-with-lease origin HEAD:main
+
+      - name: New commits found
+        if: steps.sync.outputs.has_new_commits == 'true'
+        run: echo "New commits were found to sync."
+
+      - name: No new commits
+        if: steps.sync.outputs.has_new_commits == 'false'
+        run: echo "There were no new commits."
+
+      - name: Show value of has_new_commits
+        run: echo "${{ steps.sync.outputs.has_new_commits }}"

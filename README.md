@@ -10,7 +10,7 @@ Each run makes three passes over different repo sources, deduplicating by owner/
 
 1. **GitHub App installations** — for every user in the Ortelius database with a connected GitHub App installation (`GITHUB_APP_ID`/`GITHUB_PRIVATE_KEY` must be set, otherwise this pass is skipped), queries all accessible repositories via the GitHub Apps API
 2. **Org-level tracked repos** — repos explicitly tracked by an org (`org.tracked_repos`, GitOps-managed), on either GitHub or GitLab, using the org's GitHub App installation, an org-level encrypted PAT, or a system-wide fallback token
-3. **System-wide public tracked repos** — public repos anyone has favorited by name (`system_tracked_repos`, GitHub or GitLab), scanned using the `GITHUB_TOKEN`/`GITLAB_TOKEN` system tokens, no org credential required
+3. **System-wide public tracked repos** — public repos anyone has favorited by name (`system_tracked_repos`, GitHub or GitLab), scanned using the `DH_HELM_INDEXER_TOKEN`/`GITLAB_TOKEN` system tokens, no org credential required
 
 For each in-scope repository, the scanner:
 
@@ -78,7 +78,7 @@ Scan state lives in a single ArangoDB document at `metadata/relscanner_state` �
 | `API_BASE_URL` | `http://localhost:3000` (chart default: `https://app.deployhub.com`) | Base URL of the Ortelius backend to sync releases to |
 | `GITHUB_APP_ID` | _(none)_ | GitHub App ID — required for Pass 1 (GitHub App installation discovery); Pass 1 is skipped entirely if unset |
 | `GITHUB_PRIVATE_KEY` | _(none)_ | GitHub App private key (PEM) — required alongside `GITHUB_APP_ID` for Pass 1 |
-| `GITHUB_TOKEN` | _(none)_ | System-level GitHub token used for Pass 3 (public tracked repos) and as a fallback for org-tracked public GitHub repos |
+| `DH_HELM_INDEXER_TOKEN` | _(none)_ | System-level GitHub token used for Pass 3 (public tracked repos) and as a fallback for org-tracked public GitHub repos |
 | `GITLAB_TOKEN` | _(none)_ | System-level GitLab token used for Pass 3 (public tracked repos) |
 | `ARANGO_HOST` / `ARANGO_PORT` / `ARANGO_USER` / `ARANGO_PASS` | see [backend architecture guide](https://github.com/ortelius/ortelius/blob/main/docs/architecture.md#environment-variables-reference) | ArangoDB connection, shared with the main backend |
 

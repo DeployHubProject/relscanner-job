@@ -2262,6 +2262,10 @@ func syncGitopsEndpoint(ctx context.Context, dbConn database.DBConnection, owner
 	if endpointName == "" || releaseVersion == "" {
 		return
 	}
+	// Sync records must carry the version exactly as the backend stores the
+	// release (branch prefix stripped), otherwise the endpoint can't join the
+	// sync record to its release.
+	releaseVersion = util.CleanVersion(releaseVersion)
 
 	endpoint := model.NewEndpoint()
 	endpoint.Name = endpointName

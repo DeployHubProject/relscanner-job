@@ -46,7 +46,7 @@ jobs:
           set -euo pipefail
 
           git remote add upstream \
-            https://github.com/ortelius/osvdev-job.git
+            https://github.com/ortelius/relscanner-job.git
 
           git fetch upstream main
 

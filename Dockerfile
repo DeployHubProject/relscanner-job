@@ -1,11 +1,21 @@
 # ---------- Build stage ----------
 FROM public.ecr.aws/amazonlinux/amazonlinux:2027.0.20261026.1-minimal AS build
 
+ENV GO_VERSION=1.27.3
+ENV PATH=/usr/local/go/bin:$PATH
+
 WORKDIR /app
 
 RUN microdnf install -y \
       git \
-      golang
+      tar \
+      gzip
+
+RUN GO_ARCH=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/') && \
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz" -o /tmp/go.tar.gz && \
+    tar -C /usr/local -xzf /tmp/go.tar.gz && \
+    rm -f /tmp/go.tar.gz && \
+    go version      
 
 COPY . /app
 

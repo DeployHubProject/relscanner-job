@@ -2315,7 +2315,7 @@ func minimalImageSBOM(imageRef string) []byte {
 
 	bom := map[string]interface{}{
 		"bomFormat":   "CycloneDX",
-		"specVersion": "1.5",
+		"specVersion": "1.6",
 		"metadata": map[string]interface{}{
 			"timestamp": time.Now().UTC().Format(time.RFC3339),
 			"component": map[string]interface{}{
@@ -2658,7 +2658,7 @@ func isCppBuildMarker(name string) bool {
 
 func generateCdxgenSBOM(repoDir string) ([]byte, error) {
 	outFile := filepath.Join(repoDir, "bom.cdx.json")
-	cmd := exec.Command("cdxgen", "-t", "cpp", "-o", outFile, "--spec-version", "1.5", repoDir)
+	cmd := exec.Command("cdxgen", "-t", "cpp", "-o", outFile, "--spec-version", "1.6", repoDir)
 	cmd.Dir = repoDir
 
 	var stderr bytes.Buffer
@@ -2711,7 +2711,7 @@ func minimalCycloneDXSBOM(owner, repoName, componentVersion string) []byte {
 
 	bom := map[string]interface{}{
 		"bomFormat":   "CycloneDX",
-		"specVersion": "1.5",
+		"specVersion": "1.6",
 		"metadata": map[string]interface{}{
 			"timestamp": time.Now().UTC().Format(time.RFC3339),
 			"component": map[string]interface{}{

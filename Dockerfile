@@ -1,55 +1,59 @@
-FROM public.ecr.aws/amazonlinux/amazonlinux:2027.0.20261026.1
+# ---------- Build stage ----------
+FROM public.ecr.aws/amazonlinux/amazonlinux:2027.0.20261026.1 AS build
 
 WORKDIR /app
 
-ENV GO_VERSION=1.27.1
-ENV NODE_VERSION=24.16.0
-ENV PATH=/usr/local/go/bin:/usr/local/node/bin:$PATH
+ENV GO_VERSION=1.27.3
+ENV PATH=/usr/local/go/bin:$PATH
+ENV CGO_ENABLED=0
 
-RUN ["/bin/bash", "-eo", "pipefail", "-c", "\
-    dnf update -y && \
+RUN dnf update -y && \
     dnf install -y \
       ca-certificates \
       tar \
       gzip \
-      xz \
       git \
-      java-21-amazon-corretto-devel \
-      gcc \
-      glibc-devel \
     && dnf clean all \
-    && rm -rf /var/cache/dnf \
-"]
+    && rm -rf /var/cache/dnf
 
-RUN ["/bin/bash", "-eo", "pipefail", "-c", "\
-    case \"$(uname -m)\" in \
-      x86_64|amd64) GO_ARCH=amd64; NODE_ARCH=x64 ;; \
-      aarch64|arm64) GO_ARCH=arm64; NODE_ARCH=arm64 ;; \
-      *) echo \"Unsupported architecture: $(uname -m)\" >&2; exit 1 ;; \
-    esac && \
-    curl -fsSL \"https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz\" -o /tmp/go.tar.gz && \
+RUN GO_ARCH=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/') && \
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz" -o /tmp/go.tar.gz && \
     tar -C /usr/local -xzf /tmp/go.tar.gz && \
     rm -f /tmp/go.tar.gz && \
-    curl -fsSL \"https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz\" -o /tmp/node.tar.xz && \
-    mkdir -p /usr/local/node && \
-    tar -C /usr/local/node --strip-components=1 -xJf /tmp/node.tar.xz && \
-    rm -f /tmp/node.tar.xz && \
-    go version && \
-    node --version && \
-    npm --version \
-"]
-
-RUN ["/bin/bash", "-eo", "pipefail", "-c", "\
-    npm install -g @cyclonedx/cdxgen && \
-    cdxgen --version \
-"]
+    go version
 
 COPY . /app
 
-RUN ["/bin/bash", "-eo", "pipefail", "-c", "\
-    go mod tidy && \
-    go build -o main . \
-"]
+RUN go mod tidy && \
+    go build -o main . 
+
+
+# ---------- Runtime stage ----------
+FROM public.ecr.aws/amazonlinux/amazonlinux:2027.0.20261026.1
+
+WORKDIR /app
+
+ENV CDXGEN_VERSION=v13.5.0
+
+RUN dnf update -y && \
+    dnf install -y \
+      ca-certificates \
+      git \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+
+RUN ARCH=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/') && \
+    ASSET="cdxgen-linux-${ARCH}" && \
+    BASE_URL="https://github.com/cdxgen/cdxgen/releases/download/${CDXGEN_VERSION}" && \
+    cd /tmp && \
+    curl -fsSLO "${BASE_URL}/${ASSET}" && \
+    curl -fsSLO "${BASE_URL}/${ASSET}.sha256" && \
+    sha256sum -c "${ASSET}.sha256" && \
+    install -m 0755 "${ASSET}" /usr/local/bin/cdxgen && \
+    cdxgen --version && \
+    rm -rf "${ASSET}" "${ASSET}.sha256" /tmp/caxa
+
+COPY --from=build /app/main /app/main
 
 ENV ARANGO_HOST=localhost
 ENV ARANGO_USER=root

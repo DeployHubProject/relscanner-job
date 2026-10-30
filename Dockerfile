@@ -1,46 +1,30 @@
 # ---------- Build stage ----------
-FROM public.ecr.aws/amazonlinux/amazonlinux:2027.0.20261026.1 AS build
+FROM public.ecr.aws/amazonlinux/amazonlinux:2027.0.20261026.1-minimal AS build
 
 WORKDIR /app
 
-ENV GO_VERSION=1.27.3
-ENV PATH=/usr/local/go/bin:$PATH
-ENV CGO_ENABLED=0
-
-RUN dnf update -y && \
-    dnf install -y \
-      ca-certificates \
-      tar \
-      gzip \
+RUN microdnf install -y \
       git \
-    && dnf clean all \
-    && rm -rf /var/cache/dnf
-
-RUN GO_ARCH=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/') && \
-    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz" -o /tmp/go.tar.gz && \
-    tar -C /usr/local -xzf /tmp/go.tar.gz && \
-    rm -f /tmp/go.tar.gz && \
-    go version
+      golang
 
 COPY . /app
 
 RUN go mod tidy && \
     go build -o main . 
 
-
 # ---------- Runtime stage ----------
-FROM public.ecr.aws/amazonlinux/amazonlinux:2027.0.20261026.1
+FROM public.ecr.aws/amazonlinux/amazonlinux:2027.0.20261026.1-minimal
 
 WORKDIR /app
 
 ENV CDXGEN_VERSION=v13.5.0
 
-RUN dnf update -y && \
-    dnf install -y \
+RUN microdnf update -y && \
+    microdnf install -y \
       ca-certificates \
       git \
-    && dnf clean all \
-    && rm -rf /var/cache/dnf
+    && microdnf clean all \
+    && rm -rf /var/cache/dnf /var/cache/yum
 
 RUN ARCH=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/') && \
     ASSET="cdxgen-linux-${ARCH}" && \

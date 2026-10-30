@@ -1,6 +1,6 @@
 module relscanner
 
-go 1.27.3
+go 1.27.0
 
 require (
 	github.com/anchore/syft v1.55.0
